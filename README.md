@@ -8,7 +8,9 @@ Starter templates for the **AI-Memory Hackathon by cognee** — three ready-to-r
 
 ### 1. Set up Qdrant Cloud
 
-Create a free cluster at [cloud.qdrant.io](https://cloud.qdrant.io), then download and restore the provided snapshots:
+Create a free cluster at [cloud.qdrant.io](https://cloud.qdrant.io), then download and restore the provided snapshots.
+
+> **Already have the files locally?** If you have `snapshots/` and `models/` directories, skip the download steps and go straight to restoring/running.
 
 ```bash
 # Download snapshots from S3
@@ -125,56 +127,6 @@ Automated anomaly detection using vector analysis and Qdrant's batch API.
 - Vendor variance (coefficient of variation > 0.8)
 
 **Endpoints:** `/api/anomalies`, `/api/search`, `/api/investigate/{point_id}`, `/api/explain/{point_id}` (LLM explanation)
-
-## Qdrant Features Matrix
-
-| Feature | P1 | P2 | P3 |
-|---|:---:|:---:|:---:|
-| Query API (vector search) | x | x | x |
-| Batch Query API | | | x |
-| Point-ID Recommend | x | | x |
-| Group API | x | x | |
-| Scroll API | | x | x |
-| Payload Indexing | x | x | x |
-| Filtered Search | x | x | |
-
-## Architecture
-
-```
-User Query
-    |
-    v
-+---------------------+
-|  nomic-embed-text    |  <-- Local GGUF (768-dim embeddings)
-|  (llama-cpp-python)  |
-+---------+-----------+
-          | query vector
-          v
-+---------------------+
-|   Qdrant Cloud       |  <-- 14,837 vectors, 6 collections
-|   (managed cluster)  |
-+---------+-----------+
-          | results
-          v
-+---------------------+
-|  Distil Labs SLM     |  <-- Local GGUF (reasoning, Q&A, explanation)
-|  (llama-cpp-python)  |
-+---------+-----------+
-          | answer
-          v
-+---------------------+
-|   FastAPI App        |  <-- RAG Q&A, charts, anomaly detection
-+---------------------+
-```
-
-All models run locally via `llama-cpp-python` — no external API keys needed.
-
-## Data
-
-IT hardware procurement records:
-- Invoices and transactions with line items (laptops, monitors, keyboards, SSDs, RAM)
-- 10 vendors, ~2000 documents, spanning 2025
-- Entities extracted by Cognee (product names, SKUs, vendor IDs)
 
 ## Prerequisites
 
