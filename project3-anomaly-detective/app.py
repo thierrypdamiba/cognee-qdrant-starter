@@ -20,7 +20,6 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse
 from llama_cpp import Llama
-from openai import OpenAI
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     PayloadSchemaType,
@@ -40,11 +39,13 @@ EMBED_MODEL_PATH = os.path.join(
 
 qdrant = QdrantClient(url=os.environ["QDRANT_URL"], api_key=os.environ["QDRANT_API_KEY"])
 
-llm_client = OpenAI(
-    base_url=os.environ.get("LLM_BASE_URL", "https://openrouter.ai/api/v1"),
-    api_key=os.environ.get("LLM_API_KEY", ""),
+LLM_MODEL_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "models", "cognee-distillabs-model-gguf-quantized", "model-quantized.gguf"
 )
-LLM_MODEL = os.environ.get("LLM_MODEL", "qwen/qwen3-4b:free")
+LLM_FALLBACK_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "models", "Qwen3-4B-Q4_K_M", "Qwen3-4B-Q4_K_M.gguf"
+)
+llm_model = None
 embed_model = None
 anomaly_cache = {}
 
@@ -197,9 +198,18 @@ def detect_vendor_anomalies(records):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global embed_model
+    global embed_model, llm_model
     print("Loading nomic-embed-text model...")
     embed_model = Llama(model_path=EMBED_MODEL_PATH, embedding=True, n_ctx=2048, n_batch=512, verbose=False)
+
+    for path, name in [(LLM_MODEL_PATH, "Distil Labs"), (LLM_FALLBACK_PATH, "Qwen3-4B")]:
+        if os.path.exists(path):
+            print(f"Loading {name} LLM...")
+            llm_model = Llama(model_path=path, n_ctx=4096, n_batch=512, verbose=False)
+            print(f"{name} LLM loaded.")
+            break
+    else:
+        print("WARNING: No LLM model found.")
 
     # Payload indexes
     for field, schema in [("type", PayloadSchemaType.KEYWORD), ("text", PayloadSchemaType.TEXT)]:
@@ -480,26 +490,28 @@ async def explain_anomaly(point_id: str):
 
     context = f"Anomaly: {json.dumps(anomaly, default=str)}\n\nSimilar records:\n" + "\n---\n".join(similar_texts)
 
-    try:
-        response = llm_client.chat.completions.create(
-            model=LLM_MODEL,
-            messages=[
-                {"role": "system", "content": "You are a procurement auditor. Explain why this record was flagged as anomalous and what action should be taken. Be specific and concise."},
-                {"role": "user", "content": context},
-            ],
-            max_tokens=300,
-            temperature=0.3,
-        )
-        explanation = response.choices[0].message.content
-    except Exception as e:
-        explanation = f"LLM error: {e}. Set LLM_BASE_URL, LLM_API_KEY, LLM_MODEL in .env"
+    if llm_model is None:
+        explanation = "No LLM loaded. Place model-quantized.gguf in models/cognee-distillabs-model-gguf-quantized/"
+    else:
+        try:
+            response = llm_model.create_chat_completion(
+                messages=[
+                    {"role": "system", "content": "You are a procurement auditor. Explain why this record was flagged as anomalous and what action should be taken. Be specific and concise."},
+                    {"role": "user", "content": context},
+                ],
+                max_tokens=300,
+                temperature=0.3,
+            )
+            explanation = response["choices"][0]["message"]["content"]
+        except Exception as e:
+            explanation = f"LLM error: {e}"
 
     return {
         "point_id": point_id,
         "anomaly": anomaly,
         "explanation": explanation,
         "time_ms": round((time.time() - t0) * 1000, 1),
-        "model": LLM_MODEL,
+        "model": "distil-labs-local" if llm_model else "none",
     }
 
 

@@ -18,7 +18,6 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse
 from llama_cpp import Llama
-from openai import OpenAI
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
@@ -52,12 +51,14 @@ qdrant = QdrantClient(
     api_key=os.environ["QDRANT_API_KEY"],
 )
 
-# LLM client — works with OpenRouter (free), Groq, Ollama, or any OpenAI-compatible API
-llm_client = OpenAI(
-    base_url=os.environ.get("LLM_BASE_URL", "https://openrouter.ai/api/v1"),
-    api_key=os.environ.get("LLM_API_KEY", ""),
+# Local LLM — Distil Labs model (primary) or Qwen3-4B (fallback)
+LLM_MODEL_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "models", "cognee-distillabs-model-gguf-quantized", "model-quantized.gguf"
 )
-LLM_MODEL = os.environ.get("LLM_MODEL", "qwen/qwen3-4b:free")
+LLM_FALLBACK_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "models", "Qwen3-4B-Q4_K_M", "Qwen3-4B-Q4_K_M.gguf"
+)
+llm_model = None
 
 embed_model = None
 
@@ -100,9 +101,24 @@ def setup_payload_indexes():
             pass
 
 
+def get_llm_response(system_prompt: str, user_prompt: str, max_tokens: int = 512) -> str:
+    """Generate LLM response using local Distil Labs / Qwen3 GGUF model."""
+    if llm_model is None:
+        return "No LLM loaded. Place model-quantized.gguf in models/cognee-distillabs-model-gguf-quantized/ or Qwen3-4B-Q4_K_M.gguf in models/Qwen3-4B-Q4_K_M/"
+    response = llm_model.create_chat_completion(
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        max_tokens=max_tokens,
+        temperature=0.3,
+    )
+    return response["choices"][0]["message"]["content"]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global embed_model
+    global embed_model, llm_model
     print("Loading nomic-embed-text model...")
     embed_model = Llama(
         model_path=EMBED_MODEL_PATH,
@@ -111,7 +127,17 @@ async def lifespan(app: FastAPI):
         n_batch=512,
         verbose=False,
     )
-    print("Model loaded.")
+    print("Embedding model loaded.")
+
+    # Load local LLM — prefer Distil Labs model, then Qwen3-4B
+    for path, name in [(LLM_MODEL_PATH, "Distil Labs"), (LLM_FALLBACK_PATH, "Qwen3-4B")]:
+        if os.path.exists(path):
+            print(f"Loading {name} LLM from {path}...")
+            llm_model = Llama(model_path=path, n_ctx=4096, n_batch=512, verbose=False)
+            print(f"{name} LLM loaded.")
+            break
+    else:
+        print("WARNING: No LLM model found. Place GGUF files in models/ directory.")
 
     for c in COLLECTIONS:
         info = qdrant.get_collection(c)
@@ -618,30 +644,25 @@ async def ask(q: str = Query(...), collection: str = Query("DocumentChunk_text")
     context = "\n---\n".join(context_docs)
     retrieval_ms = round((time.time() - t0) * 1000, 1)
 
-    # LLM reasoning
+    # LLM reasoning via local Distil Labs model or cloud fallback
     t1 = time.time()
     try:
-        response = llm_client.chat.completions.create(
-            model=LLM_MODEL,
-            messages=[
-                {"role": "system", "content": "You are a procurement analyst. Answer questions using the provided context from invoices, transactions, and vendor data. Be specific with numbers and dates."},
-                {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {q}"},
-            ],
-            max_tokens=512,
-            temperature=0.3,
+        answer = get_llm_response(
+            "You are a procurement analyst. Answer questions using the provided context from invoices, transactions, and vendor data. Be specific with numbers and dates.",
+            f"Context:\n{context}\n\nQuestion: {q}",
         )
-        answer = response.choices[0].message.content
     except Exception as e:
-        answer = f"LLM error: {e}. Set LLM_BASE_URL, LLM_API_KEY, LLM_MODEL in .env"
+        answer = f"LLM error: {e}"
     llm_ms = round((time.time() - t1) * 1000, 1)
 
+    model_name = "distil-labs-local" if llm_model else (LLM_MODEL or "none")
     return {
         "question": q,
         "answer": answer,
         "sources": len(context_docs),
         "retrieval_ms": retrieval_ms,
         "llm_ms": llm_ms,
-        "model": LLM_MODEL,
+        "model": model_name,
     }
 
 

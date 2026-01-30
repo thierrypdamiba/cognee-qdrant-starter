@@ -17,7 +17,6 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse
 from llama_cpp import Llama
-from openai import OpenAI
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     PayloadSchemaType,
@@ -37,11 +36,13 @@ EMBED_MODEL_PATH = os.path.join(
 
 qdrant = QdrantClient(url=os.environ["QDRANT_URL"], api_key=os.environ["QDRANT_API_KEY"])
 
-llm_client = OpenAI(
-    base_url=os.environ.get("LLM_BASE_URL", "https://openrouter.ai/api/v1"),
-    api_key=os.environ.get("LLM_API_KEY", ""),
+LLM_MODEL_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "models", "cognee-distillabs-model-gguf-quantized", "model-quantized.gguf"
 )
-LLM_MODEL = os.environ.get("LLM_MODEL", "qwen/qwen3-4b:free")
+LLM_FALLBACK_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "models", "Qwen3-4B-Q4_K_M", "Qwen3-4B-Q4_K_M.gguf"
+)
+llm_model = None
 embed_model = None
 analytics_cache = {}
 
@@ -138,9 +139,18 @@ def compute_analytics(invoices, transactions):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global embed_model
+    global embed_model, llm_model
     print("Loading nomic-embed-text model...")
     embed_model = Llama(model_path=EMBED_MODEL_PATH, embedding=True, n_ctx=2048, n_batch=512, verbose=False)
+
+    for path, name in [(LLM_MODEL_PATH, "Distil Labs"), (LLM_FALLBACK_PATH, "Qwen3-4B")]:
+        if os.path.exists(path):
+            print(f"Loading {name} LLM...")
+            llm_model = Llama(model_path=path, n_ctx=4096, n_batch=512, verbose=False)
+            print(f"{name} LLM loaded.")
+            break
+    else:
+        print("WARNING: No LLM model found.")
 
     # Create payload indexes for fast filtering
     for collection in ["DocumentChunk_text", "TextDocument_name"]:
@@ -359,21 +369,23 @@ async def generate_insights(q: str = Query("Summarize spending patterns and flag
         "monthly_spend": data.get("monthly_spend", {}),
     }, indent=2, default=str)
 
-    try:
-        response = llm_client.chat.completions.create(
-            model=LLM_MODEL,
-            messages=[
-                {"role": "system", "content": "You are a spend analytics expert. Analyze the procurement data and provide actionable insights. Be specific with numbers."},
-                {"role": "user", "content": f"Procurement data:\n{summary}\n\nAnalysis request: {q}"},
-            ],
-            max_tokens=512,
-            temperature=0.3,
-        )
-        insights = response.choices[0].message.content
-    except Exception as e:
-        insights = f"LLM error: {e}. Set LLM_BASE_URL, LLM_API_KEY, LLM_MODEL in .env"
+    if llm_model is None:
+        insights = "No LLM loaded. Place model-quantized.gguf in models/cognee-distillabs-model-gguf-quantized/"
+    else:
+        try:
+            response = llm_model.create_chat_completion(
+                messages=[
+                    {"role": "system", "content": "You are a spend analytics expert. Analyze the procurement data and provide actionable insights. Be specific with numbers."},
+                    {"role": "user", "content": f"Procurement data:\n{summary}\n\nAnalysis request: {q}"},
+                ],
+                max_tokens=512,
+                temperature=0.3,
+            )
+            insights = response["choices"][0]["message"]["content"]
+        except Exception as e:
+            insights = f"LLM error: {e}"
 
-    return {"question": q, "insights": insights, "model": LLM_MODEL}
+    return {"question": q, "insights": insights, "model": "distil-labs-local" if llm_model else "none"}
 
 
 if __name__ == "__main__":

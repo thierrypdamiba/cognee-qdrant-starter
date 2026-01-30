@@ -2,7 +2,7 @@
 
 # cognee-qdrant-starter
 
-Starter templates for the **AI-Memory Hackathon by cognee** — three ready-to-run FastAPI projects that demonstrate semantic search, analytics, and anomaly detection on procurement data using **local embeddings** (nomic-embed-text) and **Qdrant Cloud**.
+Starter templates for the **AI-Memory Hackathon by cognee** — three ready-to-run FastAPI projects that demonstrate semantic search, analytics, and anomaly detection on procurement data using **local models** (Distil Labs SLM + nomic-embed-text) and **Qdrant Cloud**.
 
 ## Quick Start
 
@@ -30,15 +30,21 @@ This uploads 6 pre-built collections (14,837 vectors, 768-dim, with payload inde
 | TextDocument_name | 2,000 | Document references |
 | TextSummary_text | 2,000 | Document summaries |
 
-### 2. Place the embedding model
+### 2. Place the models
 
-Put `nomic-embed-text-v1.5.f16.gguf` in `models/nomic-embed-text/`:
+Put the provided GGUF models in the `models/` directory:
 
 ```
 models/
   nomic-embed-text/
-    nomic-embed-text-v1.5.f16.gguf
+    nomic-embed-text-v1.5.f16.gguf          # embeddings
+  cognee-distillabs-model-gguf-quantized/
+    model-quantized.gguf                      # Distil Labs SLM for reasoning
+  Qwen3-4B-Q4_K_M/
+    Qwen3-4B-Q4_K_M.gguf                     # Qwen3 fallback (optional)
 ```
+
+The Distil Labs model powers the RAG Q&A and anomaly explanation endpoints. If not found, Qwen3-4B is used as fallback.
 
 ### 3. Run a project
 
@@ -66,7 +72,7 @@ Semantic search across all procurement data with interactive UI.
 - **Payload indexing** (`create_payload_index`) — keyword + full-text indexes
 - **Filtered search** — combine vector similarity with metadata filters
 
-**Endpoints:** `/search`, `/search/grouped`, `/discover`, `/recommend`, `/filter`, `/collections`
+**Endpoints:** `/search`, `/search/grouped`, `/discover`, `/recommend`, `/filter`, `/ask` (RAG Q&A), `/collections`
 
 ---
 
@@ -82,7 +88,7 @@ Interactive analytics dashboard with Chart.js visualizations and semantic search
 
 **Shows:** $13.4M total spend, 1000 invoices + 1000 transactions, 10 vendors, monthly trends, top products by qty/revenue.
 
-**Endpoints:** `/api/analytics`, `/api/search`, `/api/search/grouped`
+**Endpoints:** `/api/analytics`, `/api/search`, `/api/search/grouped`, `/api/insights` (LLM analysis)
 
 ---
 
@@ -102,7 +108,7 @@ Automated anomaly detection using vector analysis and Qdrant's batch API.
 - Near-duplicates (similarity > 0.99 via batch recommend)
 - Vendor variance (coefficient of variation > 0.8)
 
-**Endpoints:** `/api/anomalies`, `/api/search`, `/api/investigate/{point_id}`
+**Endpoints:** `/api/anomalies`, `/api/search`, `/api/investigate/{point_id}`, `/api/explain/{point_id}` (LLM explanation)
 
 ## Qdrant Features Matrix
 
@@ -123,7 +129,7 @@ User Query
     |
     v
 +---------------------+
-|  nomic-embed-text    |  <-- Local GGUF model (768-dim)
+|  nomic-embed-text    |  <-- Local GGUF (768-dim embeddings)
 |  (llama-cpp-python)  |
 +---------+-----------+
           | query vector
@@ -135,11 +141,17 @@ User Query
           | results
           v
 +---------------------+
-|   FastAPI App        |  <-- Formatted cards, charts, anomaly detection
+|  Distil Labs SLM     |  <-- Local GGUF (reasoning, Q&A, explanation)
+|  (llama-cpp-python)  |
++---------+-----------+
+          | answer
+          v
++---------------------+
+|   FastAPI App        |  <-- RAG Q&A, charts, anomaly detection
 +---------------------+
 ```
 
-No external API keys needed for embeddings — runs locally via `llama-cpp-python`.
+All models run locally via `llama-cpp-python` — no external API keys needed.
 
 ## Data
 
