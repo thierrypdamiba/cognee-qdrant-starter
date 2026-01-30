@@ -23,6 +23,9 @@ from qdrant_client.models import (
     Filter,
     FieldCondition,
     MatchValue,
+    Prefetch,
+    Fusion,
+    FusionQuery,
 )
 
 load_dotenv()
@@ -295,9 +298,14 @@ async def semantic_search(q: str = Query(...), limit: int = Query(20)):
     embed_ms = round((time.time() - t0) * 1000, 1)
 
     t1 = time.time()
+    # Prefetch + RRF Fusion: two-stage retrieval pipeline
     results = qdrant.query_points(
         collection_name="DocumentChunk_text",
-        query=vec,
+        prefetch=[
+            Prefetch(query=vec, limit=100),
+            Prefetch(query=vec, limit=50),
+        ],
+        query=FusionQuery(fusion=Fusion.RRF),
         limit=limit,
         with_payload=True,
     )

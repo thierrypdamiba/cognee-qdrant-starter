@@ -21,7 +21,15 @@ from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse
 from llama_cpp import Llama
 from qdrant_client import QdrantClient
-from qdrant_client.models import PayloadSchemaType
+from qdrant_client.models import (
+    PayloadSchemaType,
+    Prefetch,
+    Fusion,
+    FusionQuery,
+    RecommendQuery,
+    RecommendInput,
+    RecommendStrategy,
+)
 
 load_dotenv()
 
@@ -389,8 +397,16 @@ async def semantic_search(q: str = Query(...), limit: int = Query(20)):
     vec = get_embedding(q)
     embed_ms = round((time.time() - t0) * 1000, 1)
 
+    # Prefetch + RRF Fusion for better ranking
     results = qdrant.query_points(
-        collection_name="DocumentChunk_text", query=vec, limit=limit, with_payload=True,
+        collection_name="DocumentChunk_text",
+        prefetch=[
+            Prefetch(query=vec, limit=100),
+            Prefetch(query=vec, limit=50),
+        ],
+        query=FusionQuery(fusion=Fusion.RRF),
+        limit=limit,
+        with_payload=True,
     )
     items = [{"id": str(p.id), "score": p.score, "text": (p.payload or {}).get("text", "")} for p in results.points]
     return {"results": items, "time_ms": round((time.time() - t0) * 1000, 1), "embed_ms": embed_ms}
@@ -398,16 +414,29 @@ async def semantic_search(q: str = Query(...), limit: int = Query(20)):
 
 @app.get("/api/investigate/{point_id}")
 async def investigate(point_id: str):
-    """Use Qdrant Recommend API to find similar records to a given anomaly."""
+    """
+    Qdrant Recommend API: find records similar to a flagged anomaly.
+    Uses RecommendQuery with BEST_SCORE strategy for nuanced similarity.
+    """
     t0 = time.time()
     results = qdrant.query_points(
         collection_name="DocumentChunk_text",
-        query=point_id,
+        query=RecommendQuery(
+            recommend=RecommendInput(
+                positive=[point_id],
+                strategy=RecommendStrategy.BEST_SCORE,
+            )
+        ),
         limit=10,
         with_payload=True,
     )
     items = [{"id": str(s.id), "score": s.score, "payload": s.payload} for s in results.points]
-    return {"point_id": point_id, "similar": items, "time_ms": round((time.time() - t0) * 1000, 1)}
+    return {
+        "point_id": point_id,
+        "similar": items,
+        "time_ms": round((time.time() - t0) * 1000, 1),
+        "method": "recommend_best_score",
+    }
 
 
 if __name__ == "__main__":

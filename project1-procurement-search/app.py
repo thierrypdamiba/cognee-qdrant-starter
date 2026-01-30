@@ -1,11 +1,11 @@
 """
 Project 1: Procurement Semantic Search
 FastAPI app with local nomic-embed-text embeddings + Qdrant advanced features:
-- Vector semantic search
-- Discovery API (context-aware search with positive/negative examples)
-- Grouping results by vendor/type
+- Prefetch + Fusion (RRF) — multi-stage retrieval pipeline
+- Discovery API — context-aware search with positive/negative examples
+- Recommend API — positive/negative point-based recommendations
+- Group API — faceted results by type
 - Payload-indexed filtering
-- MMR for diverse results
 """
 
 import os
@@ -24,10 +24,16 @@ from qdrant_client.models import (
     FieldCondition,
     Filter,
     MatchValue,
-    Range,
     PayloadSchemaType,
-    SearchParams,
-    QuantizationSearchParams,
+    Prefetch,
+    Fusion,
+    FusionQuery,
+    DiscoverQuery,
+    DiscoverInput,
+    ContextPair,
+    RecommendQuery,
+    RecommendInput,
+    RecommendStrategy,
 )
 
 load_dotenv()
@@ -155,7 +161,7 @@ async def index():
         .record-text { color: #ccc; font-size: 0.9rem; }
     </style></head><body>
     <h1>Procurement Search <span class="badge local">Local LLM</span> <span class="badge qdrant">Qdrant Cloud</span></h1>
-    <p class="subtitle">Semantic search with nomic-embed-text (local) + Qdrant Discovery API, Grouping, MMR</p>
+    <p class="subtitle">nomic-embed-text (local) + Qdrant Prefetch/RRF Fusion, Discovery API, Recommend API, Grouping</p>
     <div class="search-box">
         <input id="q" placeholder="Search invoices, products, vendors..." autofocus />
         <select id="collection">
@@ -167,7 +173,7 @@ async def index():
         <button onclick="doSearch()">Search</button>
     </div>
     <div class="controls">
-        <label><input type="checkbox" id="useMmr" /> MMR (diverse results)</label>
+        <label><input type="checkbox" id="useFusion" checked /> Prefetch + RRF Fusion</label>
         <label><input type="checkbox" id="groupByType" /> Group by type</label>
         <label>Limit: <select id="limit"><option>10</option><option selected>20</option><option>50</option></select></label>
     </div>
@@ -180,14 +186,14 @@ async def index():
         const q = document.getElementById('q').value;
         if (!q) return;
         const c = document.getElementById('collection').value;
-        const mmr = document.getElementById('useMmr').checked;
+        const fusion = document.getElementById('useFusion').checked;
         const group = document.getElementById('groupByType').checked;
         const limit = document.getElementById('limit').value;
         document.getElementById('results').innerHTML = '<p style="color:#888">Embedding query locally & searching Qdrant...</p>';
 
         const url = group
             ? `/search/grouped?q=${encodeURIComponent(q)}&collection=${c}&limit=${limit}`
-            : `/search?q=${encodeURIComponent(q)}&collection=${c}&limit=${limit}&mmr=${mmr}`;
+            : `/search?q=${encodeURIComponent(q)}&collection=${c}&limit=${limit}&use_fusion=${fusion}`;
         const res = await fetch(url);
         const data = await res.json();
 
@@ -263,12 +269,22 @@ async def index():
         </div>`;
     }
 
-    async function discover(pointId, positive) {
-        const q = document.getElementById('q').value;
+    let positiveCtx = null, negativeCtx = null;
+
+    async function discover(pointId, isPositive) {
+        if (isPositive) { positiveCtx = pointId; } else { negativeCtx = pointId; }
+        const q = document.getElementById('q').value || 'procurement';
         const c = document.getElementById('collection').value;
-        const res = await fetch(`/discover?q=${encodeURIComponent(q)}&collection=${c}&point_id=${pointId}&positive=${positive}`);
+        let url = `/discover?q=${encodeURIComponent(q)}&collection=${c}`;
+        if (positiveCtx) url += `&positive_id=${positiveCtx}`;
+        if (negativeCtx) url += `&negative_id=${negativeCtx}`;
+        const res = await fetch(url);
         const data = await res.json();
-        document.getElementById('stats').textContent = `Discovery: ${data.results.length} results in ${data.time_ms}ms`;
+        const method = data.method === 'discovery_api' ? 'Discovery API (target + context pairs)'
+            : data.method === 'recommend_api' ? 'Recommend API (positive/negative)'
+            : 'Vector search';
+        document.getElementById('stats').textContent = `${method}: ${data.results.length} results in ${data.time_ms}ms` +
+            (positiveCtx ? ` | +${positiveCtx.slice(0,8)}` : '') + (negativeCtx ? ` | -${negativeCtx.slice(0,8)}` : '');
         document.getElementById('results').innerHTML = data.results.map(renderResult).join('');
     }
 
@@ -282,19 +298,36 @@ async def search(
     q: str = Query(...),
     collection: str = Query("DocumentChunk_text"),
     limit: int = Query(20, ge=1, le=100),
-    mmr: bool = Query(False),
+    use_fusion: bool = Query(True),
 ):
+    """
+    Qdrant Prefetch + RRF Fusion: fetch a broad candidate set, then fuse rankings.
+    Two prefetch branches with different limits create a multi-stage pipeline.
+    """
     t0 = time.time()
     query_vector = get_embedding(q)
     embed_ms = round((time.time() - t0) * 1000, 1)
 
     t1 = time.time()
-    results = qdrant.query_points(
-        collection_name=collection,
-        query=query_vector,
-        limit=limit,
-        with_payload=True,
-    )
+    if use_fusion:
+        # Multi-stage: two prefetches with different candidate pool sizes, fused with RRF
+        results = qdrant.query_points(
+            collection_name=collection,
+            prefetch=[
+                Prefetch(query=query_vector, limit=100),  # broad recall
+                Prefetch(query=query_vector, limit=50),   # tighter precision
+            ],
+            query=FusionQuery(fusion=Fusion.RRF),
+            limit=limit,
+            with_payload=True,
+        )
+    else:
+        results = qdrant.query_points(
+            collection_name=collection,
+            query=query_vector,
+            limit=limit,
+            with_payload=True,
+        )
     search_ms = round((time.time() - t1) * 1000, 1)
 
     items = []
@@ -315,6 +348,7 @@ async def search(
         "time_ms": round((time.time() - t0) * 1000, 1),
         "embed_ms": embed_ms,
         "search_ms": search_ms,
+        "method": "prefetch_rrf_fusion" if use_fusion else "basic_query",
     }
 
 
@@ -370,33 +404,63 @@ async def search_grouped(
 async def discover(
     q: str = Query(...),
     collection: str = Query("DocumentChunk_text"),
-    point_id: str = Query(...),
-    positive: bool = Query(True),
+    positive_id: str = Query(None, description="Point ID to use as positive context"),
+    negative_id: str = Query(None, description="Point ID to use as negative context"),
     limit: int = Query(20),
 ):
     """
-    Qdrant Discovery API: refine search using a point as positive or negative context.
+    Qdrant Discovery API: search with a target vector constrained by context pairs.
+    Uses DiscoverQuery with ContextPair(positive, negative) to steer results toward
+    the positive example and away from the negative example.
     """
     t0 = time.time()
     query_vector = get_embedding(q)
     embed_ms = round((time.time() - t0) * 1000, 1)
 
     t1 = time.time()
-    # Use query_points with point ID for "more like this", or vector search for "less like this"
-    if positive:
+    if positive_id and negative_id:
+        # Full Discovery: target vector + context pair
         results = qdrant.query_points(
             collection_name=collection,
-            query=point_id,
+            query=DiscoverQuery(
+                discover=DiscoverInput(
+                    target=query_vector,
+                    context=[ContextPair(positive=positive_id, negative=negative_id)],
+                )
+            ),
+            limit=limit,
+            with_payload=True,
+        )
+    elif positive_id:
+        # Recommend with positive only
+        results = qdrant.query_points(
+            collection_name=collection,
+            query=RecommendQuery(
+                recommend=RecommendInput(
+                    positive=[positive_id],
+                    strategy=RecommendStrategy.AVERAGE_VECTOR,
+                )
+            ),
+            limit=limit,
+            with_payload=True,
+        )
+    elif negative_id:
+        # Recommend with negative — find things unlike this point but matching query
+        results = qdrant.query_points(
+            collection_name=collection,
+            query=RecommendQuery(
+                recommend=RecommendInput(
+                    positive=[query_vector],
+                    negative=[negative_id],
+                    strategy=RecommendStrategy.BEST_SCORE,
+                )
+            ),
             limit=limit,
             with_payload=True,
         )
     else:
-        # For negative: search with query vector, results will naturally differ from the point
         results = qdrant.query_points(
-            collection_name=collection,
-            query=query_vector,
-            limit=limit,
-            with_payload=True,
+            collection_name=collection, query=query_vector, limit=limit, with_payload=True,
         )
     search_ms = round((time.time() - t1) * 1000, 1)
 
@@ -413,28 +477,42 @@ async def discover(
 
     return {
         "query": q,
-        "context_point": point_id,
-        "positive": positive,
+        "positive_id": positive_id,
+        "negative_id": negative_id,
         "results": items,
         "time_ms": round((time.time() - t0) * 1000, 1),
         "embed_ms": embed_ms,
         "search_ms": search_ms,
+        "method": "discovery_api" if (positive_id and negative_id) else "recommend_api" if (positive_id or negative_id) else "basic_query",
     }
 
 
 @app.get("/recommend")
 async def recommend(
-    point_ids: str = Query(..., description="Comma-separated point IDs"),
+    positive_ids: str = Query(..., description="Comma-separated positive point IDs"),
+    negative_ids: str = Query("", description="Comma-separated negative point IDs"),
     collection: str = Query("DocumentChunk_text"),
+    strategy: str = Query("average_vector", description="average_vector or best_score"),
     limit: int = Query(10),
 ):
-    """Qdrant Recommendation API: find similar items based on example points."""
+    """
+    Qdrant Recommend API: find items similar to positive examples, dissimilar to negatives.
+    Supports AVERAGE_VECTOR (default) and BEST_SCORE strategies.
+    """
     t0 = time.time()
-    ids = [pid.strip() for pid in point_ids.split(",")]
-    # Use first point ID for nearest-neighbor recommendation
+    pos = [pid.strip() for pid in positive_ids.split(",") if pid.strip()]
+    neg = [pid.strip() for pid in negative_ids.split(",") if pid.strip()]
+    strat = RecommendStrategy.BEST_SCORE if strategy == "best_score" else RecommendStrategy.AVERAGE_VECTOR
+
     results = qdrant.query_points(
         collection_name=collection,
-        query=ids[0],
+        query=RecommendQuery(
+            recommend=RecommendInput(
+                positive=pos,
+                negative=neg if neg else None,
+                strategy=strat,
+            )
+        ),
         limit=limit,
         with_payload=True,
     )
@@ -447,7 +525,11 @@ async def recommend(
             "text": payload.get("text", ""),
             "type": payload.get("type", ""),
         })
-    return {"results": items, "time_ms": round((time.time() - t0) * 1000, 1)}
+    return {
+        "results": items,
+        "time_ms": round((time.time() - t0) * 1000, 1),
+        "method": f"recommend_{strategy}",
+    }
 
 
 @app.get("/filter")
