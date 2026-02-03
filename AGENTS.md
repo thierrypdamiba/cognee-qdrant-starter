@@ -26,27 +26,38 @@ Each project has: `app.py` (FastAPI + HTML UI), `pyproject.toml`, `uv.lock`, `.e
 
 ## cognee Usage
 
-cognee is the core knowledge graph framework. The starter data was built using cognee's ECL pipeline:
+cognee is the core knowledge graph framework. Use it to add your own data:
+
+### Add data
 
 ```python
 import cognee
 
-# 1. Add documents
-await cognee.add(documents)
+# Add text
+await cognee.add("Invoice INV-001 from TechSupply: 50x laptops at $1200 = $60,000")
 
-# 2. Extract knowledge graph (entities, relationships, summaries)
+# Add files
+await cognee.add("/path/to/invoice.pdf")
+await cognee.add(["doc1.txt", "doc2.csv", "doc3.pdf"])
+
+# Build knowledge graph (extracts entities, relationships, summaries)
 await cognee.cognify()
-
-# 3. Search with graph context
-results = await cognee.search(query_text="...", query_type=SearchType.CHUNKS)
 ```
 
-### cognee Search Types
+### Search
 
 ```python
 from cognee.api.v1.search import SearchType
 
-# Available search types:
+results = await cognee.search(
+    query_text="Which vendors supply IT equipment?",
+    query_type=SearchType.CHUNKS,
+)
+```
+
+### Search types
+
+```python
 SearchType.CHUNKS              # Raw document chunks
 SearchType.SUMMARIES           # Document summaries
 SearchType.GRAPH_COMPLETION    # LLM reasoning with graph context
@@ -54,7 +65,14 @@ SearchType.RAG_COMPLETION      # Traditional RAG
 SearchType.NATURAL_LANGUAGE    # Natural language queries
 ```
 
-### cognee + Qdrant Integration
+### Reset data
+
+```python
+await cognee.prune.prune_data()
+await cognee.prune.prune_system(metadata=True)
+```
+
+### cognee + Qdrant integration
 
 ```python
 from cognee_community_vector_adapter_qdrant import register

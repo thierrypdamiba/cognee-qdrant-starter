@@ -113,17 +113,55 @@ Automated anomaly detection using vector analysis and Qdrant's batch API.
 
 ## cognee Pipeline
 
-The starter data was built using cognee's ECL (Extract, Cognify, Load) pipeline. You can extend it with your own data:
+The starter data was built using cognee's ECL (Extract, Cognify, Load) pipeline. You can add your own data:
+
+### Quick start
 
 ```bash
 cd cognee-pipeline
 cp .env.example .env
-# Configure Qdrant Cloud + LLM provider
+# Edit .env: add Qdrant credentials + LLM provider
 uv sync
 uv run python ingest.py
 ```
 
-This runs `cognee.add()` + `cognee.cognify()` to extract entities, relationships, and summaries from raw documents, then stores them as vectors in Qdrant. See [cognee docs](https://docs.cognee.ai) for full pipeline options.
+### Add your own data
+
+```python
+import cognee
+from cognee.api.v1.search import SearchType
+
+# 1. Add documents (text, files, URLs)
+await cognee.add("Your document text here...")
+await cognee.add("/path/to/document.pdf")
+await cognee.add(["doc1.txt", "doc2.csv", "doc3.pdf"])
+
+# 2. Build knowledge graph (extracts entities, relationships, summaries)
+await cognee.cognify()
+
+# 3. Search with graph context
+results = await cognee.search(
+    query_text="What vendors supply IT equipment?",
+    query_type=SearchType.CHUNKS,  # or SUMMARIES, GRAPH_COMPLETION, RAG_COMPLETION
+)
+```
+
+### Supported input types
+
+- Plain text strings
+- PDF, DOCX, TXT, CSV files
+- URLs (web pages)
+- Directories of files
+
+### Reset and re-ingest
+
+```python
+# Clear all data and start fresh
+await cognee.prune.prune_data()
+await cognee.prune.prune_system(metadata=True)
+```
+
+See [cognee docs](https://docs.cognee.ai) for full pipeline options.
 
 ## Deployment
 
