@@ -12,7 +12,7 @@ load_dotenv()
 
 SNAPSHOT_URL = os.getenv(
     "SNAPSHOT_URL",
-    "https://cognee-data.nyc3.digitaloceanspaces.com/cognee-vectors-snapshot.tar.gz"
+    "https://cognee-data.nyc3.digitaloceanspaces.com/cognee-vectors-snapshot.tar.gz"  # 91MB
 )
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 
