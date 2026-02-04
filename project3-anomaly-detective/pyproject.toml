@@ -9,5 +9,6 @@ dependencies = [
     "numpy>=2.4.1",
     "python-dotenv>=1.2.1",
     "qdrant-client>=1.16.2",
+    "requests>=2.31",
     "uvicorn>=0.40.0",
 ]

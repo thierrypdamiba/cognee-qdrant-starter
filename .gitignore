@@ -11,3 +11,11 @@ models/
 models-*.zip
 snapshots/
 *.snapshot
+
+# Snapshots (large binary files)
+cognee-vectors-snapshot.tar.gz
+*.tar.gz
+
+# Local env files with real keys
+.env
+.env.local

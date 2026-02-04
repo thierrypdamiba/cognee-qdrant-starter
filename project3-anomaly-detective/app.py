@@ -9,6 +9,7 @@ Local nomic-embed-text + Qdrant advanced features:
 """
 
 import os
+import sys
 import json
 import time
 import statistics
@@ -19,7 +20,6 @@ import numpy as np
 from dotenv import load_dotenv
 from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse
-from llama_cpp import Llama
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     PayloadSchemaType,
@@ -33,6 +33,10 @@ from qdrant_client.models import (
 
 load_dotenv()
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from shared.llm import init_llm, get_llm_response, get_model_name, is_available as llm_available
+from shared.embeddings import init_embeddings, get_embedding
+
 EMBED_MODEL_PATH = os.path.join(
     os.path.dirname(__file__), "..", "models", "nomic-embed-text", "nomic-embed-text-v1.5.f16.gguf"
 )
@@ -45,14 +49,7 @@ LLM_MODEL_PATH = os.path.join(
 LLM_FALLBACK_PATH = os.path.join(
     os.path.dirname(__file__), "..", "models", "Qwen3-4B-Q4_K_M", "Qwen3-4B-Q4_K_M.gguf"
 )
-llm_model = None
-embed_model = None
 anomaly_cache = {}
-
-
-def get_embedding(text: str) -> list[float]:
-    result = embed_model.embed(f"search_query: {text}")
-    return result[0] if isinstance(result[0], list) else result
 
 
 def parse_record(payload):
@@ -198,18 +195,8 @@ def detect_vendor_anomalies(records):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global embed_model, llm_model
-    print("Loading nomic-embed-text model...")
-    embed_model = Llama(model_path=EMBED_MODEL_PATH, embedding=True, n_ctx=2048, n_batch=512, verbose=False)
-
-    for path, name in [(LLM_MODEL_PATH, "Distil Labs"), (LLM_FALLBACK_PATH, "Qwen3-4B")]:
-        if os.path.exists(path):
-            print(f"Loading {name} LLM...")
-            llm_model = Llama(model_path=path, n_ctx=4096, n_batch=512, verbose=False)
-            print(f"{name} LLM loaded.")
-            break
-    else:
-        print("WARNING: No LLM model found.")
+    init_embeddings(EMBED_MODEL_PATH)
+    init_llm([(LLM_MODEL_PATH, "Distil Labs"), (LLM_FALLBACK_PATH, "Qwen3-4B")])
 
     # Payload indexes
     for field, schema in [("type", PayloadSchemaType.KEYWORD), ("text", PayloadSchemaType.TEXT)]:
@@ -490,28 +477,21 @@ async def explain_anomaly(point_id: str):
 
     context = f"Anomaly: {json.dumps(anomaly, default=str)}\n\nSimilar records:\n" + "\n---\n".join(similar_texts)
 
-    if llm_model is None:
-        explanation = "No LLM loaded. Place model-quantized.gguf in models/cognee-distillabs-model-gguf-quantized/"
-    else:
-        try:
-            response = llm_model.create_chat_completion(
-                messages=[
-                    {"role": "system", "content": "You are a procurement auditor. Explain why this record was flagged as anomalous and what action should be taken. Be specific and concise."},
-                    {"role": "user", "content": context},
-                ],
-                max_tokens=300,
-                temperature=0.3,
-            )
-            explanation = response["choices"][0]["message"]["content"]
-        except Exception as e:
-            explanation = f"LLM error: {e}"
+    try:
+        explanation = get_llm_response(
+            "You are a procurement auditor. Explain why this record was flagged as anomalous and what action should be taken. Be specific and concise.",
+            context,
+            max_tokens=300,
+        )
+    except Exception as e:
+        explanation = f"LLM error: {e}"
 
     return {
         "point_id": point_id,
         "anomaly": anomaly,
         "explanation": explanation,
         "time_ms": round((time.time() - t0) * 1000, 1),
-        "model": "distil-labs-local" if llm_model else "none",
+        "model": get_model_name(),
     }
 
 

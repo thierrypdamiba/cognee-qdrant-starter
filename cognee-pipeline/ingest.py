@@ -29,10 +29,25 @@ async def setup():
     # Register Qdrant adapter
     from cognee_community_vector_adapter_qdrant import register
 
-    # cognee reads VECTOR_DB_PROVIDER, VECTOR_DB_URL, LLM_PROVIDER, etc. from env
+    # Configure LLM (OpenAI by default)
+    api_key = os.getenv("OPENAI_API_KEY")
+    if api_key:
+        cognee.config.set_llm_api_key(api_key)
+        cognee.config.set_llm_provider("openai")
+        cognee.config.set_llm_model("gpt-4o-mini")
+
+    # Configure vector DB
+    cognee.config.set_vector_db_provider("qdrant")
+    qdrant_url = os.getenv("QDRANT_URL") or os.getenv("VECTOR_DB_URL")
+    qdrant_key = os.getenv("QDRANT_API_KEY")
+    if qdrant_url:
+        cognee.config.set_vector_db_url(qdrant_url)
+    if qdrant_key:
+        cognee.config.set_vector_db_key(qdrant_key)
+
     print("cognee configured:")
-    print(f"  Vector DB: {os.getenv('VECTOR_DB_PROVIDER', 'default')}")
-    print(f"  LLM: {os.getenv('LLM_PROVIDER', 'default')} / {os.getenv('LLM_MODEL', 'default')}")
+    print(f"  Vector DB: qdrant")
+    print(f"  LLM: openai / gpt-4o-mini")
 
 
 async def ingest_sample_data():
@@ -93,9 +108,11 @@ async def demo_search():
 async def main():
     await setup()
 
-    # Optional: clear previous data for a fresh start
-    # await cognee.prune.prune_data()
-    # await cognee.prune.prune_system(metadata=True)
+    # Clear previous data for a fresh start (required for first run)
+    print("Pruning existing data...")
+    await cognee.prune.prune_data()
+    await cognee.prune.prune_system(metadata=True)
+    print("Data pruned.")
 
     await ingest_sample_data()
     await demo_search()

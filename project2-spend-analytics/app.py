@@ -8,6 +8,7 @@ Local nomic-embed-text embeddings + Qdrant advanced features:
 """
 
 import os
+import sys
 import json
 import time
 from collections import defaultdict
@@ -16,7 +17,6 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse
-from llama_cpp import Llama
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     PayloadSchemaType,
@@ -30,6 +30,10 @@ from qdrant_client.models import (
 
 load_dotenv()
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from shared.llm import init_llm, get_llm_response, get_model_name, is_available as llm_available
+from shared.embeddings import init_embeddings, get_embedding
+
 EMBED_MODEL_PATH = os.path.join(
     os.path.dirname(__file__), "..", "models", "nomic-embed-text", "nomic-embed-text-v1.5.f16.gguf"
 )
@@ -42,14 +46,7 @@ LLM_MODEL_PATH = os.path.join(
 LLM_FALLBACK_PATH = os.path.join(
     os.path.dirname(__file__), "..", "models", "Qwen3-4B-Q4_K_M", "Qwen3-4B-Q4_K_M.gguf"
 )
-llm_model = None
-embed_model = None
 analytics_cache = {}
-
-
-def get_embedding(text: str) -> list[float]:
-    result = embed_model.embed(f"search_query: {text}")
-    return result[0] if isinstance(result[0], list) else result
 
 
 def parse_text_payload(payload):
@@ -139,18 +136,8 @@ def compute_analytics(invoices, transactions):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global embed_model, llm_model
-    print("Loading nomic-embed-text model...")
-    embed_model = Llama(model_path=EMBED_MODEL_PATH, embedding=True, n_ctx=2048, n_batch=512, verbose=False)
-
-    for path, name in [(LLM_MODEL_PATH, "Distil Labs"), (LLM_FALLBACK_PATH, "Qwen3-4B")]:
-        if os.path.exists(path):
-            print(f"Loading {name} LLM...")
-            llm_model = Llama(model_path=path, n_ctx=4096, n_batch=512, verbose=False)
-            print(f"{name} LLM loaded.")
-            break
-    else:
-        print("WARNING: No LLM model found.")
+    init_embeddings(EMBED_MODEL_PATH)
+    init_llm([(LLM_MODEL_PATH, "Distil Labs"), (LLM_FALLBACK_PATH, "Qwen3-4B")])
 
     # Create payload indexes for fast filtering
     for collection in ["DocumentChunk_text", "TextDocument_name"]:
@@ -369,23 +356,15 @@ async def generate_insights(q: str = Query("Summarize spending patterns and flag
         "monthly_spend": data.get("monthly_spend", {}),
     }, indent=2, default=str)
 
-    if llm_model is None:
-        insights = "No LLM loaded. Place model-quantized.gguf in models/cognee-distillabs-model-gguf-quantized/"
-    else:
-        try:
-            response = llm_model.create_chat_completion(
-                messages=[
-                    {"role": "system", "content": "You are a spend analytics expert. Analyze the procurement data and provide actionable insights. Be specific with numbers."},
-                    {"role": "user", "content": f"Procurement data:\n{summary}\n\nAnalysis request: {q}"},
-                ],
-                max_tokens=512,
-                temperature=0.3,
-            )
-            insights = response["choices"][0]["message"]["content"]
-        except Exception as e:
-            insights = f"LLM error: {e}"
+    try:
+        insights = get_llm_response(
+            "You are a spend analytics expert. Analyze the procurement data and provide actionable insights. Be specific with numbers.",
+            f"Procurement data:\n{summary}\n\nAnalysis request: {q}",
+        )
+    except Exception as e:
+        insights = f"LLM error: {e}"
 
-    return {"question": q, "insights": insights, "model": "distil-labs-local" if llm_model else "none"}
+    return {"question": q, "insights": insights, "model": get_model_name()}
 
 
 if __name__ == "__main__":
